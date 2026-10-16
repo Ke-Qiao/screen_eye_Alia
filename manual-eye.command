@@ -1,8 +1,9 @@
 #!/bin/bash
 
 printf '%s\n' \
-  '通过树莓派手动控制眼睛：方向键或 WASD 每次移动 10 px，空格居中。' \
-  'R 同时反转上下和左右；Q 或 Ctrl+C 居中后退出。'
+  '通过树莓派手动控制双眼：1 选屏幕1，2 选屏幕2，0 选双眼。' \
+  '竖装视角：方向键或 WASD 每次移动 10 px；空格居中当前选择；R 反转当前选择的两轴。' \
+  '启动时双眼居中；Q 或 Ctrl+C 将双眼居中后退出。'
 
 ssh -tt -o BatchMode=yes -o ConnectTimeout=10 ke-qiao@192.168.10.221 \
   'python3 -u /home/ke-qiao/Alia-eye/pi/eye_control.py --host 192.168.10.133 --token-file /home/ke-qiao/Alia-eye/eye-control.token --manual'

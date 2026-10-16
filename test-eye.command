@@ -1,12 +1,12 @@
 #!/bin/bash
 
 printf '%s\n' \
-  '通过树莓派运行眼睛上下往返演示：2 分钟，幅度 60 px，周期 4 秒。' \
+  '通过树莓派运行双眼同步上下往返演示：2 分钟，幅度 12 px，周期 20 秒（竖装上下运动）。' \
   '按 Ctrl+C 可提前停止并发送居中指令。' \
-  '背光 8%、图案 325×214 像素来自已烧录的固件配置；本脚本只运行运动演示。'
+  '背光 8%、图案 150×228 像素来自已烧录的固件配置；本脚本只运行运动演示。'
 
 ssh -tt -o BatchMode=yes -o ConnectTimeout=10 ke-qiao@192.168.10.221 \
-  'python3 -u /home/ke-qiao/Alia-eye/pi/eye_control.py --host 192.168.10.133 --token-file /home/ke-qiao/Alia-eye/eye-control.token --demo --amplitude 60 --period 4 --seconds 120'
+  'python3 -u /home/ke-qiao/Alia-eye/pi/eye_control.py --host 192.168.10.133 --token-file /home/ke-qiao/Alia-eye/eye-control.token --demo --amplitude 12 --period 20 --seconds 120'
 ssh_status=$?
 
 if [ "$ssh_status" -eq 0 ]; then

@@ -1,5 +1,6 @@
 #include "eye_core.h"
 #include "eye_asset.h"
+#include "display_setup.h"
 #include "network_config.h"
 #include <algorithm>
 #include <cassert>
@@ -12,17 +13,17 @@
 
 std::vector<uint16_t> verify(const eye::Geometry& g, const std::vector<uint8_t>& source, int yOffset, int xOffset = 0) {
   assert(source.size() == size_t(g.textureWidth * g.textureHeight * 2));
-  std::vector<uint16_t> world(g.canvasWidth * g.canvasHeight, 0xFFFF);
+  std::vector<uint16_t> world(g.canvasWidth * g.canvasHeight, EYE_BACKGROUND);
   // Independent reference: actually build the full canvas, then take a fixed crop.
   for (int y = 0; y < g.textureHeight; ++y) {
     for (int x = 0; x < g.textureWidth; ++x) {
       const int p = (y * g.textureWidth + x) * 2;
-      world[(g.textureY() - g.clampX(xOffset) + y) * g.canvasWidth + g.textureX() + g.clamp(yOffset) + x] = source[p] | (source[p + 1] << 8);
+      world[(g.textureY() + g.clamp(yOffset) + y) * g.canvasWidth + g.textureX() + g.clampX(xOffset) + x] = source[p] | (source[p + 1] << 8);
     }
   }
   std::vector<uint16_t> actual(g.width * g.height, 0xDEAD);
   for (int y = 0; y < g.height; y += 8) {
-    eye::renderRows(g, source.data(), xOffset, yOffset, y, std::min(8, g.height - y), 0xFFFF, actual.data() + y * g.width);
+    eye::renderRows(g, source.data(), xOffset, yOffset, y, std::min(8, g.height - y), EYE_BACKGROUND, actual.data() + y * g.width);
   }
   for (int y = 0; y < g.height; ++y)
     for (int x = 0; x < g.width; ++x)
@@ -39,6 +40,47 @@ void writeFrame(const char* path, const eye::Geometry& g, const std::vector<uint
     file.put(char((pixel & 31) * 255 / 31));
   }
   assert(file.good());
+}
+
+void verifyRegions(const eye::Geometry& g, const std::vector<uint8_t>& source) {
+  std::vector<uint16_t> display(g.width * g.height, EYE_BACKGROUND), expected(display.size());
+  eye::Rect previous{};
+  bool first = true;
+  for (int centerX : {g.width / 2, 0, g.width - 1})
+    for (int angle : {0, 1, -1, 37, 449, 900, -900, 1799, -1800})
+      for (int offset : {0, -1, g.minX(), g.maxX(), 0}) {
+        const eye::Calibration c{centerX, g.height / 2, angle, 0, 0};
+        const auto transform = eye::makeTransform(g, offset, offset / 2, c);
+        const auto bounds = eye::textureBounds(g, transform);
+        const auto region = first ? eye::Rect{0, 0, g.width, g.height} : eye::unite(previous, bounds);
+        assert(region.left >= 0 && region.top >= 0 && region.right <= g.width && region.bottom <= g.height);
+        // Frozen v8 sampling reference: the 0-degree copy must retain every pixel.
+        for (int y = 0; y < g.height; ++y) {
+          float sx = transform.sourceX + y * transform.sine, sy = transform.sourceY + y * transform.cosine;
+          for (int x = 0; x < g.width; ++x, sx += transform.cosine, sy -= transform.sine) {
+            uint16_t color = EYE_BACKGROUND;
+            if (sx >= 0 && sx < g.textureWidth && sy >= 0 && sy < g.textureHeight) {
+              const int index = 2 * (int(sy) * g.textureWidth + int(sx));
+              color = uint16_t(source[index]) | (uint16_t(source[index + 1]) << 8);
+            }
+            expected[y * g.width + x] = color;
+          }
+        }
+        for (int y = 0; y < g.height; ++y) for (int x = 0; x < g.width; ++x)
+          if (expected[y * g.width + x] != EYE_BACKGROUND)
+            assert(x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom);
+        if (!region.empty()) for (int row = region.top; row < region.bottom; row += 8) {
+          const int rows = std::min(8, region.bottom - row);
+          std::vector<uint16_t> packed(g.width * rows + 4, 0xDEAD);
+          eye::renderRegionRows(g, source.data(), transform, region, row, rows, EYE_BACKGROUND, packed.data());
+          for (int i = 0; i < 4; ++i) assert(packed[g.width * rows + i] == 0xDEAD);
+          for (int y = 0; y < rows; ++y) for (int x = 0; x < region.width(); ++x)
+            display[(row + y) * g.width + region.left + x] = packed[y * region.width() + x];
+        }
+        assert(display == expected);  // Clear the old position, including clipped/rotated/off-screen eyes.
+        previous = bounds;
+        first = false;
+      }
 }
 
 int main() {
@@ -94,6 +136,17 @@ int main() {
   }
   assert(eye::parsePosition("XY -30 40", horizontal, vertical) && horizontal == -30 && vertical == 40);
   assert(eye::parsePosition("XY -2147483648 2147483647", horizontal, vertical) && horizontal == INT32_MIN && vertical == INT32_MAX);
+  int selected = -1;
+  const char* inner = nullptr;
+  for (const char* bad : {"", "EYE", "EYE ", "EYE 0 XY 0 0", "EYE 3 XY 0 0", "EYE 12 XY 0 0", "EYE 1"}) {
+    assert(!eye::parseEyeCommand(bad, selected, inner));
+    assert(selected == -1 && inner == nullptr);
+  }
+  assert(eye::parseEyeCommand("EYE 1 XY -30 40", selected, inner) && selected == 0);
+  assert(eye::parsePosition(inner, horizontal, vertical) && horizontal == -30 && vertical == 40);
+  assert(eye::parseEyeCommand("EYE 2 Y -60", selected, inner) && selected == 1);
+  assert(eye::parseOffset(inner, value) && value == -60);
+  assert(eye::parseEyeCommand("EYE 2 POS", selected, inner) && std::strcmp(inner, "POS") == 0);
   eye::LineReader reader;
   for (char c : std::string("Y -60\r")) assert(reader.push(c) == eye::LineReader::Pending);
   assert(reader.push('\n') == eye::LineReader::Ready && std::strcmp(reader.text, "Y -60") == 0);
@@ -104,12 +157,29 @@ int main() {
   for (char c : std::string("INFO")) reader.push(c);
   assert(reader.push('\n') == eye::LineReader::Ready && std::strcmp(reader.text, "INFO") == 0);
 
+  eye::Calibration calibration{120, 160, 0, 0, 0}, parsed = calibration;
+  static_assert(sizeof(eye::CalibrationStore) == 44, "Preserve existing NVS layout");
+  const eye::Calibration legacy{133, 151, -73, 1, 1};
+  assert(eye::validCalibration(legacy, 240, 320));
+  assert(eye::parseCalibration("CAL 239 319 -1800 1 0", parsed, 240, 320));
+  assert(parsed.centerX == 239 && parsed.centerY == 319 && parsed.angle10 == -1800 && parsed.flipped == 1);
+  assert(eye::parseCalibration("CAL 0 0 1800 0 0", parsed, 240, 320));
+  for (const char* bad : {"CAL", "CAL ", "CAL -1 160 0 0 0", "CAL 240 160 0 0 0", "CAL 120 320 0 0 0",
+                          "CAL 120 160 1801 0 0", "CAL 120 160 -1801 0 0", "CAL 120 160 0 2 0",
+                          "CAL 120 160 0 0 -1", "CAL 120 160 0 0 1", "CAL 120 160 1.2 0 0", "CAL 120 160 0 0 0 junk",
+                          "CAL 2147483648 160 0 0 0", "CAL 120 160 0 0", "CAL 120 160 0 0 0 "}) {
+    parsed = calibration;
+    assert(!eye::parseCalibration(bad, parsed, 240, 320));
+    assert(std::memcmp(&parsed, &calibration, sizeof(parsed)) == 0);
+  }
+  std::cout << "PASS calibration input: strict bounds, tenths of a degree, orientation, rejected color changes, unchanged on rejection\n";
+
   // Odd dimensions, partial final stripe, exposed background, and exact RGB565 byte order.
   const eye::Geometry small{3, 5, 11, 10, 6, 3};
   std::vector<uint8_t> pattern(6 * 3 * 2);
   for (size_t i = 0; i < pattern.size(); ++i) pattern[i] = uint8_t(i * 13);
-  assert(small.minOffset() == -2 && small.maxOffset() == 3);
-  assert(small.minX() == -4 && small.maxX() == 3);
+  assert(small.minOffset() == -3 && small.maxOffset() == 4);
+  assert(small.minX() == -2 && small.maxX() == 3);
   for (int offset : {-1000, small.minOffset(), -1, 0, 1, small.maxOffset(), 1000})
     for (int horizontalOffset : {-1000, small.minX(), 0, small.maxX(), 1000}) verify(small, pattern, offset, horizontalOffset);
   const uint8_t red[] = {0x00, 0xF8};
@@ -122,9 +192,15 @@ int main() {
   assert(file.good());
   const std::vector<uint8_t> image((std::istreambuf_iterator<char>(file)), {});
   const eye::Geometry g{240, 320, 720, 640, kTextureWidth, kTextureHeight};
+  verifyRegions(g, image);
+  verifyRegions(small, pattern);
+  const auto moved = eye::unite(eye::textureBounds(g, eye::makeTransform(g, 0, 0, calibration)),
+                                eye::textureBounds(g, eye::makeTransform(g, 1, 0, calibration)));
+  assert(moved.width() * moved.height() < g.width * g.height / 2);
+  std::cout << "PASS rectangle updates match complete frames pixel-for-pixel: clipping, rotations, old-position clearing, odd widths, partial stripes and buffer bounds\n";
   assert(g.textureWidth <= g.canvasWidth && g.textureHeight <= g.canvasHeight);
-  assert(g.minOffset() == -197 && g.maxOffset() == 198);
-  assert(g.minX() == -213 && g.maxX() == 213);
+  assert(g.minOffset() == -206 && g.maxOffset() == 206);
+  assert(g.minX() == -285 && g.maxX() == 285);
   auto center = verify(g, image, 0);
   auto up = verify(g, image, -60);
   auto down = verify(g, image, 60);
@@ -132,24 +208,52 @@ int main() {
   auto right = verify(g, image, 0, 60);
   assert(center != up && center != down && up != down);
   assert(center != left && center != right && left != right);
-  // Motion changes columns only, preserving every source row and the artwork orientation.
-  for (int row = 0; row < g.height; ++row)
-    for (int x = 0; x < g.width - 60; ++x) {
-      assert(up[row * g.width + x] == center[row * g.width + x + 60]);
-      assert(down[row * g.width + x + 60] == center[row * g.width + x]);
-    }
+  // Independent direction checks catch an axis swap or reversed movement.
   for (int row = 0; row < g.height - 60; ++row)
     for (int x = 0; x < g.width; ++x) {
-      assert(right[row * g.width + x] == center[(row + 60) * g.width + x]);
-      assert(left[(row + 60) * g.width + x] == center[row * g.width + x]);
+      assert(up[row * g.width + x] == center[(row + 60) * g.width + x]);
+      assert(down[(row + 60) * g.width + x] == center[row * g.width + x]);
+    }
+  for (int row = 0; row < g.height; ++row)
+    for (int x = 0; x < g.width - 60; ++x) {
+      assert(left[row * g.width + x] == center[row * g.width + x + 60]);
+      assert(right[row * g.width + x + 60] == center[row * g.width + x]);
     }
   for (int offset : {g.minOffset(), 0, g.maxOffset(), -1000, 1000})
     for (int horizontalOffset : {g.minX(), 0, g.maxX(), -1000, 1000}) verify(g, image, offset, horizontalOffset);
   assert(verify(g, image, 0) == center);
+  // Independent double-precision inverse rotation checks the actual artwork, not the transform helper.
+  for (int angle : {0, 900, -900, 1800, -1800, 1, 123, -164}) {
+    const eye::Calibration c{133, 151, angle, 0, 0};
+    const auto transform = eye::makeTransform(g, 12, -9, c);
+    std::vector<uint16_t> rotated(g.width * g.height);
+    for (int row = 0; row < g.height; row += 8)
+      eye::renderRows(g, image.data(), transform, row, std::min(8, g.height - row), EYE_BACKGROUND, rotated.data() + row * g.width);
+    const double radians = angle * 3.14159265358979323846 / 1800;
+    int checked = 0;
+    for (int y = 0; y < g.height; ++y) for (int x = 0; x < g.width; ++x) {
+      const double dx = x + 0.5 - (c.centerX + 12), dy = y + 0.5 - (c.centerY - 9);
+      const double sx = g.textureWidth / 2.0 + std::cos(radians) * dx + std::sin(radians) * dy;
+      const double sy = g.textureHeight / 2.0 - std::sin(radians) * dx + std::cos(radians) * dy;
+      // Float stepping can choose either neighbor exactly at a pixel boundary.
+      if (std::abs(sx - std::round(sx)) < .01 || std::abs(sy - std::round(sy)) < .01) continue;
+      uint16_t expected = EYE_BACKGROUND;
+      if (sx >= 0 && sx < g.textureWidth && sy >= 0 && sy < g.textureHeight) {
+        const int index = (int(sy) * g.textureWidth + int(sx)) * 2;
+        expected = image[index] | (image[index+1] << 8);
+      }
+      assert(rotated[y*g.width+x] == expected);
+      ++checked;
+    }
+    assert(checked > g.width * g.height * .9);
+    if (angle == 123) writeFrame(".build/rotated.ppm", g, rotated);
+  }
+  assert(EYE_BACKGROUND == 0x0000);
+  std::cout << "PASS calibration rendering: independent center, clockwise sign, cardinal/fractional angles, stripe continuity and native background\n";
   writeFrame(".build/center.ppm", g, center);
   writeFrame(".build/up.ppm", g, up);
   writeFrame(".build/down.ppm", g, down);
   writeFrame(".build/left.ppm", g, left);
   writeFrame(".build/right.ppm", g, right);
-  std::cout << "PASS actual artwork: both axes for sideways mounting, fixed crop, bounds, stripes, RGB565; XY/legacy serial parser and recovery\n";
+  std::cout << "PASS actual artwork: both axes for portrait mounting, fixed crop, bounds, stripes, RGB565; XY/legacy serial parser and recovery\n";
 }

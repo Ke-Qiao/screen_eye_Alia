@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='alia-launcher-') as directory:
                         'exit "$LAUNCHER_SSH_EXIT"\n')
     fake_ssh.chmod(0o755)
     log = temp / 'ssh-args.txt'
-    for name, mode in [('test-eye.command', '--demo --amplitude 60 --period 4 --seconds 120'),
+    for name, mode in [('test-eye.command', '--demo --amplitude 12 --period 20 --seconds 120'),
                        ('manual-eye.command', '--manual')]:
         launcher = ROOT / name
         assert os.access(launcher, os.X_OK), 'Finder launcher must be executable'
@@ -38,4 +38,40 @@ with tempfile.TemporaryDirectory(prefix='alia-launcher-') as directory:
                 assert '客户端已发送居中指令' in result.stdout
             else:
                 assert f'退出码 {code}' in result.stderr
+
+    launcher = ROOT / 'test-dual-eye.command'
+    assert os.access(launcher, os.X_OK)
+    subprocess.run(['/bin/bash', '-n', str(launcher)], check=True)
+    control = expected_args[-1].rstrip()
+    remotes = {
+        '1': f'{control} --xy 0 0 && {control} --screen 1 --demo --amplitude 12 --period 20 --seconds 60',
+        '2': f'{control} --xy 0 0 && {control} --screen 2 --demo --amplitude 12 --period 20 --seconds 60',
+        '3': f'{control} --xy 0 0 && {control} --screen both --demo --amplitude 12 --period 20 --seconds 180',
+        '4': f'{control} --manual',
+        '5': f'{control} --xy 0 0',
+    }
+    for code in (0, 23, 255):
+        log.unlink(missing_ok=True)
+        env = dict(os.environ, PATH=str(temp) + os.pathsep + os.environ.get('PATH', ''),
+                   LAUNCHER_SSH_LOG=str(log), LAUNCHER_SSH_EXIT=str(code))
+        result = subprocess.run([str(launcher)], cwd=temp, env=env,
+                                input='wrong\n1\n2\n3\n4\n5\n1\nQ\n',
+                                capture_output=True, text=True, timeout=3)
+        assert result.returncode == code, result
+        expected = []
+        for choice in ('1', '2', '3', '4', '5', '1'):
+            expected.extend(expected_args[:-1] + [remotes[choice]])
+        assert log.read_text().splitlines() == expected, 'Wrong screen, automatic retry or failed replay'
+        assert '请输入' in result.stdout
+        if code:
+            assert result.stderr.count(f'退出码 {code}') == 6
+            assert '本轮结束' not in result.stdout
+        else:
+            assert result.stdout.count('本轮结束') == 6
+    for input_text in ('', 'Q\n'):
+        log.unlink(missing_ok=True)
+        result = subprocess.run([str(launcher)], cwd=temp, env=env, input=input_text,
+                                capture_output=True, text=True, timeout=3)
+        assert result.returncode == 0 and not log.exists(), 'Menu must wait for explicit selection'
 print('PASS launcher: shell syntax, executable bit, SSH/PTY arguments, exit codes, no retries or non-interactive pause')
+print('PASS dual test menu: single-eye/both/manual/static choices, replay, invalid input, EOF and failure recovery menu')

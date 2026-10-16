@@ -1,23 +1,26 @@
 #pragma once
 
-// ESP32 DevKit + ST7789S, portrait 240 x 320; SPI pins from the supplied diagram.
-#define ST7789_DRIVER
+// Portrait mounting: eye 1 connector at top, eye 2 connector at bottom.
+#define EYE1_FLIPPED false
+#define EYE2_FLIPPED true
 #define TFT_WIDTH 240
 #define TFT_HEIGHT 320
-#define TFT_MOSI 23
-#define TFT_SCLK 18
-#define TFT_MISO 19
-#define TFT_CS 5
-#define TFT_DC 27
-#define TFT_RST -1  // This module has no RST/RES pin; use the driver's software reset.
-// Leave TFT_BL undefined so TFT_eSPI cannot turn the backlight fully on during init.
-#define EYE_BACKLIGHT_PIN 25
+#define EYE1_MOSI 23
+#define EYE1_SCLK 18
+#define EYE1_CS 5
+#define EYE1_DC 27
+#define EYE1_BL 25
+#define EYE2_MOSI 13
+#define EYE2_SCLK 14
+#define EYE2_CS 22
+#define EYE2_DC 32
+#define EYE2_BL 26
+// Neither panel has RST/RES or MISO connected; use software reset and write-only SPI.
 #define EYE_BACKLIGHT_PERCENT 8
-#define TFT_RGB_ORDER TFT_RGB
-#define TFT_INVERSION_ON
-#define SPI_FREQUENCY 40000000
+// Diagnostic clock reduction: 40 MHz showed intermittent color/stripe corruption.
+#define SPI_FREQUENCY 10000000
 
 #define EYE_CANVAS_WIDTH 720
 #define EYE_CANVAS_HEIGHT 640
-#define EYE_BACKGROUND 0xFFFF  // Match the supplied image's white background.
-#define EYE_SPEED 160.0f      // Pixels per second; tune for the physical eye.
+#define EYE_BACKGROUND 0x0000  // White on these panels in their original, accepted color mode.
+#define EYE_SPEED 40.0f       // Nominal px/s; the 100 ms time-step cap limits each update to 4 px.

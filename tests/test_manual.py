@@ -44,24 +44,43 @@ class Device:
                     conn, _ = self.listener.accept()
                 except socket.timeout:
                     continue
-                x, y = self.initial
+                positions = [self.initial, self.initial]
                 with conn, conn.makefile('rb') as stream:
                     for packet in stream:
                         command = packet.rstrip(b'\n')
                         self.commands.put(command)
+                        selected = None
+                        if command.startswith(b'EYE '):
+                            _, number, command = command.split(b' ', 2)
+                            selected = int(number) - 1
+                            assert selected in (0, 1)
+                        tag = '' if selected is None else f'{selected + 1} '
+                        indices = (0, 1) if selected is None else (selected,)
                         if command == ('AUTH ' + TOKEN).encode():
                             reply = b'OK AUTH\n'
+                        elif command == b'EYES':
+                            reply = b'EYES 2\n'
+                        elif command == b'INFO':
+                            reply = b'INFO 240 320 -197 198\n'
                         elif command == b'INFO2':
                             reply = INFO
                         elif command == b'POS':
-                            reply = f'POS {x} {y} {x} {y}\n'.encode()
+                            x, y = positions[indices[0]]
+                            reply = f'POS {tag}{x} {y} {x} {y}\n'.encode()
                         elif command.startswith(b'XY '):
                             _, a, b = command.split()
                             x, y = min(213, max(-213, int(a))), min(198, max(-197, int(b)))
                             if self.delay_ack and (x, y) != (0, 0):
                                 self.delay_ack = False
                                 assert self.release.wait(3), 'Test did not release delayed ACK'
-                            reply = b'ERR test\n' if self.reject_xy and (x, y) != (0, 0) else f'OKXY {x} {y}\n'.encode()
+                            for i in indices:
+                                positions[i] = (x, y)
+                            reply = b'ERR test\n' if self.reject_xy and (x, y) != (0, 0) else f'OKXY {tag}{x} {y}\n'.encode()
+                        elif command.startswith(b'Y '):
+                            y = min(198, max(-197, int(command[2:])))
+                            for i in indices:
+                                positions[i] = (positions[i][0], y)
+                            reply = f'OK {tag}{y}\n'.encode()
                         else:
                             reply = b'ERR command\n'
                         conn.sendall(reply)
@@ -147,6 +166,7 @@ class Terminal:
 
     def __enter__(self):
         self.expect(('AUTH ' + TOKEN).encode())
+        self.expect(b'EYES')
         self.expect(b'INFO2')
         self.expect(b'XY 0 0')
         return self
@@ -191,6 +211,12 @@ eye = EyeController(Reply(INFO))
 eye.connect_2d()
 eye.connection = Reply(b'OKXY 10 0\n')
 rejects(RuntimeError, lambda: eye.set_xy(0, 0))
+for invalid in (0, 3, True, '1', 1.0):
+    rejects(ValueError, lambda: eye.set_xy(0, 0, screen=invalid))
+eye.connection = Reply(b'OKXY 2 0 0\n')
+rejects(RuntimeError, lambda: eye.set_xy(0, 0, screen=1))
+eye.connection = Reply(b'EYES 1\n')
+rejects(RuntimeError, eye.connect_eyes)
 
 with tempfile.TemporaryDirectory(prefix='alia-manual-') as directory:
     token_file = Path(directory) / 'token'
@@ -211,6 +237,41 @@ with tempfile.TemporaryDirectory(prefix='alia-manual-') as directory:
             capture_output=True, text=True, timeout=4)
         assert result.returncode == 0 and 'OK x=213 y=-197 px' in result.stdout, result
     print('PASS 2D client and --xy: bounds, clamping, input validation')
+
+    with Device() as device:
+        with TcpConnection('127.0.0.1', device.port) as link:
+            link.authenticate(TOKEN)
+            eye = EyeController(link)
+            eye.connect_eyes()
+            eye.connect_2d()
+            assert eye.set_xy(30, -40, screen=1) == (30, -40)
+            assert eye.set_xy(-1000, 1000, screen=2) == (-213, 198)
+            assert eye.set_y(20, screen=2) == 20
+            assert eye.request_eye('POS', 'POS', 1) == ['POS', '30', '-40', '30', '-40']
+            assert eye.request_eye('POS', 'POS', 2) == ['POS', '-213', '20', '-213', '20']
+        for mode in (['--xy', '20', '-10'], ['--y', '10'],
+                     ['--demo', '--seconds', '.1', '--period', '1']):
+            result = subprocess.run(
+                [sys.executable, str(ROOT / 'pi/eye_control.py'), '--host', '127.0.0.1',
+                 '--tcp-port', str(device.port), '--token-file', str(token_file), '--screen', '2', *mode],
+                capture_output=True, text=True, timeout=4)
+            assert result.returncode == 0, result
+        commands = list(device.commands.queue)
+        assert b'EYE 2 XY 20 -10' in commands and b'EYE 2 Y 10' in commands and b'EYE 2 Y 0' in commands
+        assert not any(c.startswith((b'XY ', b'Y ')) for c in commands)
+    print('PASS independent eyes: screen IDs, no cross-eye changes, per-eye XY/Y/demo CLI')
+
+    with Device() as device, Terminal(device, token_file) as terminal:
+        terminal.key(b'1d', b'EYE 1 XY 10 0')
+        terminal.key(b'2w', b'EYE 2 XY 0 -10')
+        terminal.key(b'0s', b'EYE 1 XY 10 10')
+        terminal.expect(b'EYE 2 XY 0 0')
+        terminal.key(b'2rd', b'EYE 2 XY -10 0')
+        terminal.key(b'1d', b'EYE 1 XY 20 10')
+        terminal.key(b' ', b'EYE 1 XY 0 0')
+        terminal.key(b'q', b'XY 0 0')
+        terminal.finish()
+    print('PASS real PTY: eye selection, independent offsets/reversal, both-eye relative motion, selected center')
 
     with Device(initial=(200, 190)) as device, Terminal(device, token_file) as terminal:
         for key, command in [(b'\x1bOC', b'XY 10 0'), (b'\x1bOB', b'XY 10 10'),

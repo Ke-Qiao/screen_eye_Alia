@@ -61,8 +61,9 @@ rejects(ValueError, lambda: config_packet('x', PASSWORD, TOKEN.upper()))
 link = Link(b'boot log\n', STATUS[:8], STATUS[8:], b'OK CONFIG\n', b'NET 192.168.10.99 4242\n')
 assert provision(link, 'blue', PASSWORD, TOKEN, MAC.upper()) == (MAC, 0, '192.168.10.99', 4242)
 assert link.sent == [b'STATUS\n', config_packet('blue', PASSWORD, TOKEN)]
-v3 = Link(STATUS.replace(b'alia-eye-wifi-2', b'alia-eye-wifi-3'), b'OK CONFIG\n', b'NET 192.168.10.99 4242\n')
-assert provision(v3, 'blue', PASSWORD, TOKEN, MAC) == (MAC, 0, '192.168.10.99', 4242)
+for version in (b'alia-eye-wifi-3', b'alia-eye-wifi-4', b'alia-eye-wifi-5', b'alia-eye-wifi-6', b'alia-eye-wifi-7'):
+    current = Link(STATUS.replace(b'alia-eye-wifi-2', version), b'OK CONFIG\n', b'NET 192.168.10.99 4242\n')
+    assert provision(current, 'blue', PASSWORD, TOKEN, MAC) == (MAC, 0, '192.168.10.99', 4242)
 wrong = Link(STATUS)
 rejects(RuntimeError, lambda: provision(wrong, 'blue', PASSWORD, TOKEN, '00:00:00:00:00:00'))
 assert wrong.sent == [b'STATUS\n'], 'Must not configure a mismatched device'
