@@ -16,8 +16,18 @@ sys.path.insert(0, str(ROOT))
 from pi.eye_control import EyeController, TcpConnection, parse_info2, read_token
 
 
+def validate_backlight(data):
+    if not isinstance(data, dict) or set(data) != {'screen', 'brightness'}:
+        raise ValueError('背光参数不完整或包含未知字段')
+    if type(data['screen']) is not int or data['screen'] not in (1, 2):
+        raise ValueError('请选择屏幕 1 或 2')
+    if type(data['brightness']) is not int or not 0 <= data['brightness'] <= 100:
+        raise ValueError('背光亮度必须是 0 到 100 之间的整数')
+    return data['screen'], data['brightness']
+
+
 def validate(data):
-    if not isinstance(data, dict) or set(data) != {'screen', 'center_x', 'center_y', 'angle', 'top'}:
+    if not isinstance(data, dict) or set(data) - {'brightness'} != {'screen', 'center_x', 'center_y', 'angle', 'top'}:
         raise ValueError('校准参数不完整或包含未知字段')
     for key, low, high in (('screen', 1, 2), ('center_x', 0, 239), ('center_y', 0, 319)):
         if type(data[key]) is not int or not low <= data[key] <= high:
@@ -26,13 +36,15 @@ def validate(data):
         raise ValueError('旋转角度必须在 −180° 到 180° 之间')
     if data['top'] not in ('connector', 'opposite'):
         raise ValueError('无效的屏幕方向')
+    if 'brightness' in data:
+        validate_backlight({'screen': data['screen'], 'brightness': data['brightness']})
     return data['screen'], (data['center_x'], data['center_y'], round(data['angle'] * 10),
                             int(data['top'] == 'opposite'), 0)
 
 
 def metadata(status, geometry):
-    if len(status) != 6 or status[1] not in ('alia-eye-wifi-7', 'alia-eye-wifi-8', 'alia-eye-wifi-9'):
-        raise RuntimeError('请先为 ESP32 烧录支持外部白底的 alia-eye-wifi-7/8/9 固件')
+    if len(status) != 6 or status[1] not in ('alia-eye-wifi-7', 'alia-eye-wifi-8', 'alia-eye-wifi-9', 'alia-eye-wifi-10'):
+        raise RuntimeError('请先为 ESP32 烧录支持外部白底的 alia-eye-wifi-7/8/9/10 固件')
     width, height, *_ = parse_info2(geometry)
     if (width, height) != (240, 320):
         raise RuntimeError('当前校准界面需要 240×320 屏幕')
@@ -40,8 +52,11 @@ def metadata(status, geometry):
 
 
 def snapshot(info, replies):
+    has_backlight = info['firmware'] == 'alia-eye-wifi-10'
+    if len(replies) != (4 if has_backlight else 2):
+        raise RuntimeError('需要两块屏幕的完整参数回复')
     eyes = []
-    for screen, reply in enumerate(replies, 1):
+    for screen, reply in enumerate(replies[:2], 1):
         if len(reply) != 8 or reply[:2] != ['CAL', str(screen)]:
             raise RuntimeError('无效的校准回复')
         cx, cy, angle, flipped, reserved, unsaved = map(int, reply[2:])
@@ -51,18 +66,31 @@ def snapshot(info, replies):
         if flipped not in (0, 1) or reserved != 0 or unsaved not in (0, 1):
             raise RuntimeError('无效的校准状态')
         eyes.append(dict(item, unsaved=bool(unsaved)))
-    if len(eyes) != 2:
-        raise RuntimeError('需要两块屏幕的校准回复')
+    if has_backlight:
+        for screen, reply in enumerate(replies[2:], 1):
+            if len(reply) != 4 or reply[:2] != ['BL', str(screen)]:
+                raise RuntimeError('无效的背光回复')
+            try:
+                percent, duty = map(int, reply[2:])
+            except ValueError:
+                raise RuntimeError('无效的背光数值') from None
+            if not 0 <= percent <= 100 or duty != (1024 * percent + 50) // 100:
+                raise RuntimeError('背光亮度与 PWM 读回不一致')
+            eyes[screen - 1]['brightness'] = percent
     return dict(info, eyes=eyes)
 
 
 identity_commands = [('STATUS', 'STATUS'), ('INFO2', 'INFO2')]
 calibration_queries = [('EYE 1 CAL', 'CAL'), ('EYE 2 CAL', 'CAL')]
+backlight_queries = [('EYE 1 BL', 'BL'), ('EYE 2 BL', 'BL')]
 
 
 def state(eye):
     replies = eye.request_many(identity_commands + calibration_queries)
-    return snapshot(metadata(*replies[:2]), replies[2:])
+    info = metadata(*replies[:2])
+    if info['firmware'] == 'alia-eye-wifi-10':
+        replies += eye.request_many(backlight_queries)
+    return snapshot(info, replies[2:])
 
 
 class Device:
@@ -117,6 +145,8 @@ class Device:
     def execute(self, route, data=None):
         if route == '/api/calibration':
             screen, values = validate(data)
+        elif route == '/api/backlight':
+            screen, brightness = validate_backlight(data)
         elif route == '/api/reset':
             if not isinstance(data, dict) or set(data) != {'screen'} or type(data['screen']) is not int or data['screen'] not in (1, 2):
                 raise ValueError('请选择屏幕 1 或 2')
@@ -130,18 +160,39 @@ class Device:
             info = self.info or metadata(*eye.request_many(identity_commands))
             if self.tcp:
                 self.info = info
+            has_backlight = info['firmware'] == 'alia-eye-wifi-10'
+            if (route == '/api/backlight' or route == '/api/calibration' and 'brightness' in data) and not has_backlight:
+                raise RuntimeError('背光调整需要 alia-eye-wifi-10 固件；当前设备尚未更新')
+            queries = calibration_queries + (backlight_queries if has_backlight else [])
+            if route == '/api/backlight':
+                replies = eye.request_many([(f'EYE {screen} BL {brightness}', 'OKBL')] + queries)
+                if replies[0] != ['OKBL', str(screen), str(brightness)]:
+                    raise RuntimeError('设备未确认背光亮度')
+                result = snapshot(info, replies[1:])
+                if result['eyes'][screen - 1]['brightness'] != brightness:
+                    raise RuntimeError('背光读回与请求不一致')
+                return result
             if route in ('/api/calibration', '/api/reset'):
                 command = 'CAL ' + ' '.join(map(str, values)) if route == '/api/calibration' else 'RESETCAL'
-                requests = [(f'EYE {screen} XY 0 0', 'OKXY'), (f'EYE {screen} {command}', 'OKCAL')] + calibration_queries
-                if info['firmware'] == 'alia-eye-wifi-9':
+                requests = [(f'EYE {screen} XY 0 0', 'OKXY'), (f'EYE {screen} {command}', 'OKCAL')]
+                expected = [['OKXY', str(screen), '0', '0'], ['OKCAL', str(screen)]]
+                if route == '/api/calibration' and 'brightness' in data:
+                    requests.append((f'EYE {screen} BL {data["brightness"]}', 'OKBL'))
+                    expected.append(['OKBL', str(screen), str(data['brightness'])])
+                requests += queries
+                sync = info['firmware'] in ('alia-eye-wifi-9', 'alia-eye-wifi-10')
+                if sync:
                     requests.append(('SYNC', 'OKSYNC'))
                 replies = eye.request_many(requests)
-                if replies[0] != ['OKXY', str(screen), '0', '0'] or replies[1] != ['OKCAL', str(screen)]:
+                if replies[:len(expected)] != expected:
                     raise RuntimeError('设备未确认校准参数')
-                if info['firmware'] == 'alia-eye-wifi-9' and replies[-1] != ['OKSYNC']:
+                if sync and replies[-1] != ['OKSYNC']:
                     raise RuntimeError('设备未确认本轮画面传输完成')
-                return snapshot(info, replies[2:4])
-            replies = eye.request_many([('SAVECAL', 'OKSAVE')] + calibration_queries)
+                result = snapshot(info, replies[len(expected):len(expected) + len(queries)])
+                if route == '/api/calibration' and 'brightness' in data and result['eyes'][screen - 1]['brightness'] != data['brightness']:
+                    raise RuntimeError('背光读回与请求不一致')
+                return result
+            replies = eye.request_many([('SAVECAL', 'OKSAVE')] + queries)
             if replies[0] != ['OKSAVE']:
                 raise RuntimeError('设备未确认保存')
             return snapshot(info, replies[1:])
@@ -194,7 +245,7 @@ def make_handler(device):
             if not self.local_request() or self.headers.get('X-Eye-Control') != '1':
                 self.reply(403, {'error': '只允许本机同源控制'})
                 return
-            if self.path not in ('/api/calibration', '/api/reset', '/api/save'):
+            if self.path not in ('/api/calibration', '/api/backlight', '/api/reset', '/api/save'):
                 self.reply(404, {'error': '未找到'})
                 return
             try:

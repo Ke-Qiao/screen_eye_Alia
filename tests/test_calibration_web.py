@@ -29,6 +29,9 @@ class Link:
         self.sync_gate = None
         self.sync_waiting = threading.Event()
         self.bad_sync = False
+        self.bl = {1: 8, 2: 8}
+        self.saved_bl = dict(self.bl)
+        self.bad_bl_duty = self.swap_bl_ids = self.bad_bl_ack = self.ignore_bl = False
 
     def authenticate(self, token):
         assert token == 'a' * 64
@@ -49,6 +52,7 @@ class Link:
             reply = 'INFO2 240 320 -285 285 -206 206'
         elif text == 'SAVECAL':
             for row in self.cal.values(): row[-1] = 0
+            self.saved_bl = dict(self.bl)
             reply = 'OKSAVE'
         elif text == 'SYNC':
             reply = 'OKSYNC extra' if self.bad_sync else 'OKSYNC'
@@ -59,9 +63,22 @@ class Link:
                 reply = f'OKXY {number} 0 0'
             elif parts[2] == 'RESETCAL':
                 self.cal[number] = [120, 160, 0, number - 1, 0, 1]
+                self.bl[number] = 8
                 reply = f'OKCAL {number}'
+            elif parts[2] == 'BL':
+                assert self.version == 'alia-eye-wifi-10'
+                if len(parts) == 3:
+                    percent = self.bl[number]
+                    duty = (1024 * percent + 50) // 100 + int(self.bad_bl_duty)
+                    reply = f'BL {3-number if self.swap_bl_ids else number} {percent} {duty}'
+                else:
+                    if self.fail: raise TimeoutError('Simulated write failure')
+                    if not self.ignore_bl: self.bl[number] = int(parts[3])
+                    reply = f'OKBL {3-number if self.bad_bl_ack else number} {parts[3]}'
             elif len(parts) == 3:
-                reply = 'CAL ' + str(3-number if self.swap_cal_ids else number) + ' ' + ' '.join(map(str, self.cal[number]))
+                row = list(self.cal[number])
+                row[-1] |= self.bl[number] != self.saved_bl[number]
+                reply = 'CAL ' + str(3-number if self.swap_cal_ids else number) + ' ' + ' '.join(map(str, row))
             else:
                 if self.fail: raise TimeoutError('Simulated write failure')
                 self.cal[number] = list(map(int, parts[3:])) + [1]
@@ -152,6 +169,44 @@ try:
     link.bad_sync = True
     assert request('/api/calibration', base)[0] == 502
     link.bad_sync = False
+    before = len(link.commands)
+    assert request('/api/backlight', {'screen': 1, 'brightness': 20})[0] == 502
+    assert link.commands[before:] == ['STATUS', 'INFO2'], 'Unsupported backlight must not send a mutation'
+    link.version = 'alia-eye-wifi-10'
+    initial = json.loads(request('/api/state')[1])
+    assert [row['brightness'] for row in initial['eyes']] == [8, 8]
+    for value in (-1, 101, 1.5, True, None, '8'):
+        count = len(link.commands)
+        assert request('/api/backlight', {'screen': 1, 'brightness': value})[0] == 400
+        assert request('/api/calibration', dict(base, brightness=value))[0] == 400
+        assert len(link.commands) == count
+    for bad in ({'screen': True, 'brightness': 8}, {'screen': 3, 'brightness': 8}, {'screen': 1},
+                {'screen': 1, 'brightness': 8, 'extra': 0}):
+        count = len(link.commands)
+        assert request('/api/backlight', bad)[0] == 400 and len(link.commands) == count
+    geometry = {key: list(value) for key, value in link.cal.items()}
+    for screen, brightness in ((1, 0), (2, 100), (1, 25), (2, 8)):
+        before = len(link.commands)
+        result = request('/api/backlight', {'screen': screen, 'brightness': brightness})
+        assert result[0] == 200 and json.loads(result[1])['eyes'][screen-1]['brightness'] == brightness
+        assert link.cal == geometry, 'Backlight-only adjustment must not recenter, rotate or modify geometry'
+        assert link.commands[before:] == ['STATUS', 'INFO2', f'EYE {screen} BL {brightness}',
+                                          'EYE 1 CAL', 'EYE 2 CAL', 'EYE 1 BL', 'EYE 2 BL']
+    assert link.bl == {1: 25, 2: 8} and json.loads(result[1])['eyes'][0]['unsaved']
+    assert request('/api/calibration', dict(base, brightness=17))[0] == 200 and link.bl == {1: 17, 2: 8}
+    assert request('/api/save', {})[0] == 200 and link.saved_bl == link.bl
+    assert not any(row['unsaved'] for row in json.loads(request('/api/state')[1])['eyes'])
+    assert request('/api/reset', {'screen': 1})[0] == 200 and link.bl == {1: 8, 2: 8}
+    for flag in ('bad_bl_duty', 'swap_bl_ids', 'bad_bl_ack', 'ignore_bl'):
+        setattr(link, flag, True)
+        assert request('/api/backlight', {'screen': 1, 'brightness': 20})[0] == 502, flag
+        setattr(link, flag, False)
+        link.bl[1] = 8
+    link.fail = True
+    before = len(link.commands)
+    assert request('/api/backlight', {'screen': 2, 'brightness': 30})[0] == 502
+    assert link.commands[before:].count('EYE 2 BL 30') == 1, 'Never replay an uncertain brightness command'
+    link.fail = False
     link.version = 'alia-eye-wifi-7'
     assert request('/api/reset', {'screen': True})[0] == 400
     assert request('/api/save', {'unexpected': 1})[0] == 400
@@ -184,7 +239,7 @@ try:
                                 '--web-port', str(server.server_port)], capture_output=True, text=True, timeout=5)
     assert duplicate.returncode == 1 and 'Address already in use' in duplicate.stderr
     assert 'could not open port' not in duplicate.stderr, 'A duplicate launcher must not touch USB'
-    print('PASS calibration HTTP/client: centers/angles/orientation/colors, per-eye isolation, save/reset, old firmware guard, invalid input, origin/host guard, no retry, static assets')
+    print('PASS calibration HTTP/client: geometry/colors and independent backlights, 0/100%, PWM readback, save/reset, old firmware guard, invalid input, origin/host guard, no replay, static assets')
 finally:
     server.shutdown()
     thread.join(timeout=3)

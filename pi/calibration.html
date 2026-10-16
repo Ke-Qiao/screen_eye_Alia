@@ -8,7 +8,7 @@
 *{box-sizing:border-box}body{margin:0}main{max-width:1040px;margin:0 auto;padding:34px 24px 48px}header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:26px}h1{font-size:27px;letter-spacing:-.7px;margin:6px 0}p{line-height:1.65;margin:6px 0;color:#627086}.eyebrow{font-size:12px;letter-spacing:2px;color:#3978ad;font-weight:700}.status{font-size:13px;border:1px solid #d8e2eb;border-radius:30px;padding:9px 14px;background:#fff}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}section{background:#fff;border:1px solid #e1e6ed;border-radius:18px;padding:25px}h2{font-size:17px;margin:0 0 18px}fieldset{border:0;margin:0;padding:0;min-width:0}fieldset:disabled{opacity:.62}fieldset:disabled canvas{pointer-events:none}.screen-select{display:flex;gap:8px;margin:0 0 20px}button,select,input{font:inherit}button{border:1px solid #d7e0e9;border-radius:9px;background:#fff;color:#274261;padding:10px 14px;cursor:pointer}button:hover{background:#f0f6ff}button:disabled{cursor:wait;opacity:.5}.screen-select button[aria-pressed=true]{background:#e7f0ff;border-color:#9abce9;color:#1b5aa8}.canvas-wrap{display:flex;justify-content:center;background:#eef1f5;padding:22px;border-radius:12px}.panel{position:relative;border:7px solid #24354c;border-radius:9px;box-shadow:0 8px 20px #17304b16;background:#fff;max-width:100%}canvas{display:block;width:240px;height:320px;max-width:100%;touch-action:none;cursor:crosshair}.connector{height:5px;background:#b5c7d9;position:absolute;left:23%;right:23%;top:-13px;border-radius:3px}.connector.bottom{top:auto;bottom:-13px}.hint{font-size:12px;margin-top:16px}.row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:7px}.control{margin:0 0 23px}.control label{font-size:14px;font-weight:600}input[type=number]{width:94px;padding:7px 9px;border:1px solid #d8e0e9;border-radius:7px;color:#254469;background:#fafcff}input[type=range]{width:100%;accent-color:#3478cf;margin-top:10px}select{width:100%;padding:10px;border:1px solid #d8e0e9;border-radius:8px;background:#fff;margin-top:10px}.bounds{display:flex;justify-content:space-between;font-size:11px;color:#7e8ba0}.actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}.primary{background:#2367b7;color:#fff;border-color:#2367b7}.primary:hover{background:#195695}.message{margin-top:20px;border-radius:10px;background:#edf4fc;color:#3b5c7f;padding:13px 15px;font-size:13px;min-height:46px;line-height:1.6}.message.error{background:#fff0ed;color:#a94232}.saved{font-size:12px;color:#738298;margin-top:10px}footer{font-size:12px;color:#7a8799;margin-top:20px}button:focus-visible,canvas:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #9bc9ff;outline-offset:3px}@media(max-width:720px){main{padding:22px 14px}header{align-items:flex-start;flex-direction:column;gap:10px}.layout{grid-template-columns:1fr}section{padding:20px}}
 </style>
 <main>
-  <header><div><div class="eyebrow">ALIA / CALIBRATION</div><h1>让两只眼睛看向正前方</h1><p>分别调整安装位置、图案角度和屏幕上下。</p></div><div class="status" id="connection" role="status">正在连接设备…</div></header>
+  <header><div><div class="eyebrow">ALIA / CALIBRATION</div><h1>让两只眼睛看向正前方</h1><p>分别调整安装位置、图案角度、屏幕上下和背光亮度。</p></div><div class="status" id="connection" role="status">正在连接设备…</div></header>
   <fieldset id="editor" disabled>
     <div class="screen-select" role="group" aria-label="选择屏幕"><button type="button" data-screen="1" aria-pressed="true">屏幕 1</button><button type="button" data-screen="2" aria-pressed="false">屏幕 2</button></div>
     <div class="layout">
@@ -22,14 +22,15 @@
         <div class="control"><div class="row"><label for="y">中心 Y · 上下</label><input id="y" type="number" required min="0" max="319" step="1" value="160"></div><input id="y-range" aria-label="中心 Y 滑块" type="range" min="0" max="319" step="1" value="160"><div class="bounds"><span>上 0</span><span>下 319</span></div></div>
         <div class="control"><div class="row"><label for="angle">图案旋转 · °</label><input id="angle" type="number" required min="-180" max="180" step="0.1" value="0"></div><input id="angle-range" aria-label="图案旋转滑块" type="range" min="-180" max="180" step="0.1" value="0"><div class="bounds"><span>逆时针 −180°</span><span>顺时针 +180°</span></div></div>
         <div class="control"><label for="top">哪一端是屏幕上方？</label><select id="top"><option value="connector">排针端在上方</option><option value="opposite">排针另一端在上方</option></select><p class="hint">按实际安装选择，画面与移动方向一起补偿 180°。</p></div>
-        <p class="hint">图案外部使用白色背景，眼睛保留原来的颜色。位置、角度和上下设置分别保存。</p>
+        <div class="control"><div class="row"><label for="brightness">背光亮度 · %</label><input id="brightness" type="number" required min="0" max="100" step="1" value="8" aria-describedby="brightness-hint"></div><input id="brightness-range" aria-label="背光亮度滑块" type="range" min="0" max="100" step="1" value="8" aria-describedby="brightness-hint"><div class="bounds"><span>关闭 0%</span><span>全亮 100%</span></div><p class="hint" id="brightness-hint">只调整所选屏幕的背光，实时生效；0% 关闭背光，仍可从这里调亮。</p></div>
+        <p class="hint">图案外部使用白色背景，眼睛保留原来的颜色。每屏的安装补偿和背光可以独立调整。</p>
       </section>
     </div>
     <div class="actions"><button type="button" id="save" class="primary">保存到设备</button><button type="button" id="reset">恢复本屏默认</button></div>
   </fieldset>
   <div id="message" class="message" role="status" aria-live="polite">正在读取两块屏幕的校准参数。</div>
   <div class="row"><div id="saved" class="saved"></div><button type="button" id="refresh">重新读取设备</button></div>
-  <footer>拖动位置、调整角度或切换上下方向会实时更新所选实体屏幕。满意后点击“保存到设备”，两屏已同步的参数才会写入存储并在重启后保留。</footer>
+  <footer>位置、角度、上下方向和背光亮度均实时更新所选实体屏幕。满意后点击“保存到设备”，两屏已同步的参数才会写入存储并在重启后保留。亮度百分比表示 PWM 占空比。</footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -45,8 +46,12 @@ function actions() {
 }
 function lock(value) { busy = value; $('editor').disabled = value || !state; actions(); }
 function current() { return state.eyes.find(eye => eye.screen === selected); }
-function payload() { return {screen:selected, center_x:$('x').valueAsNumber, center_y:$('y').valueAsNumber, angle:$('angle').valueAsNumber, top:$('top').value}; }
-function same(a, b) { return a && b && ['screen', 'center_x', 'center_y', 'angle', 'top'].every(key => a[key] === b[key]); }
+function payload() {
+  const p = {screen:selected, center_x:$('x').valueAsNumber, center_y:$('y').valueAsNumber, angle:$('angle').valueAsNumber, top:$('top').value};
+  if (state && Number.isInteger(current().brightness)) p.brightness = $('brightness').valueAsNumber;
+  return p;
+}
+function same(a, b) { return a && b && ['screen', 'center_x', 'center_y', 'angle', 'top', 'brightness'].every(key => a[key] === b[key]); }
 function draw() {
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 240, 320);
   const p = payload();
@@ -66,7 +71,10 @@ function savedStatus() {
 }
 function show() {
   const p = drafts[selected] || current();
-  for (const [key, value] of [['x', p.center_x], ['y', p.center_y], ['angle', p.angle]]) { $(key).value = value; $(key + '-range').value = value; }
+  for (const [key, value] of [['x', p.center_x], ['y', p.center_y], ['angle', p.angle], ['brightness', p.brightness ?? 8]]) { $(key).value = value; $(key + '-range').value = value; }
+  const backlight = Number.isInteger(current().brightness);
+  $('brightness').disabled = $('brightness-range').disabled = !backlight;
+  $('brightness-hint').textContent = backlight ? '只调整所选屏幕的背光，实时生效；0% 关闭背光，仍可从这里调亮。' : '当前固件不支持背光调整，请更新为 alia-eye-wifi-10。';
   $('top').value = p.top;
   $('screen-number').textContent = selected;
   for (const button of document.querySelectorAll('[data-screen]')) button.setAttribute('aria-pressed', String(Number(button.dataset.screen) === selected));
@@ -110,7 +118,11 @@ async function syncLatest() {
   busy = true; nextUpdateAt = Date.now() + 33; actions();
   message(`正在实时更新屏幕 ${p.screen}…`);
   try {
-    state = await api('/api/calibration', p);
+    const previous = state.eyes.find(eye => eye.screen === p.screen);
+    const onlyBacklight = Number.isInteger(p.brightness) && ['center_x', 'center_y', 'angle', 'top'].every(key => p[key] === previous[key]);
+    const data = {...p};
+    if (p.brightness === previous.brightness) delete data.brightness;
+    state = await api(onlyBacklight ? '/api/backlight' : '/api/calibration', onlyBacklight ? {screen:p.screen, brightness:p.brightness} : data);
     if (same(drafts[p.screen], p)) delete drafts[p.screen];
     // A reply must not overwrite newer edits, drag position, focus or the selected screen.
     savedStatus();
@@ -127,14 +139,14 @@ function remember() {
   draw(); savedStatus();
   if (!validForm() || paused) {
     delete pending[selected]; actions();
-    message(paused ? '实时更新已暂停，请先重新读取设备。' : '请填写范围内的位置和角度，填完会自动同步。', true);
+    message(paused ? '实时更新已暂停，请先重新读取设备。' : '请填写范围内的位置、角度和亮度，填完会自动同步。', true);
     return;
   }
   pending[selected] = p;
   schedule();
 }
-function validForm() { return ['x', 'y', 'angle'].every(id => $(id).checkValidity()); }
-for (const key of ['x', 'y', 'angle']) {
+function validForm() { return ['x', 'y', 'angle', 'brightness'].every(id => $(id).disabled || $(id).checkValidity()); }
+for (const key of ['x', 'y', 'angle', 'brightness']) {
   $(key).addEventListener('input', () => { $(key + '-range').value = $(key).value; remember(); });
   $(key + '-range').addEventListener('input', () => { $(key).value = $(key + '-range').value; remember(); });
 }
@@ -158,8 +170,8 @@ $('preview').addEventListener('keydown', event => {
   $(key).value = Math.max(0, Math.min(key === 'x' ? 239 : 319, Number($(key).value) + step)); $(key + '-range').value = $(key).value; remember();
 });
 $('center').addEventListener('click', () => { $('x').value = $('x-range').value = 120; $('y').value = $('y-range').value = 160; remember(); });
-$('save').addEventListener('click', () => { if (!validForm()) { message('请填写范围内的位置和角度。', true); return; } perform('/api/save', {}, '两屏已同步的参数已保存到设备。'); });
-$('reset').addEventListener('click', () => perform('/api/reset', {screen:selected}, `屏幕 ${selected} 已恢复默认位置、角度和方向；保存后重启会保留。`));
+$('save').addEventListener('click', () => { if (!validForm()) { message('请填写范围内的位置、角度和亮度。', true); return; } perform('/api/save', {}, '两屏已同步的参数已保存到设备。'); });
+$('reset').addEventListener('click', () => perform('/api/reset', {screen:selected}, `屏幕 ${selected} 已恢复默认位置、角度、方向和 8% 背光；保存后重启会保留。`));
 $('refresh').addEventListener('click', () => perform('/api/state', undefined, '已重新读取设备参数。'));
 perform('/api/state', undefined, '已连接。拖动中心或调整参数，实体屏幕会实时跟随。');
 </script>

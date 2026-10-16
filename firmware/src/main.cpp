@@ -19,7 +19,7 @@ static_assert(EYE_SPI_DRIVE_CAP >= 0 && EYE_SPI_DRIVE_CAP < GPIO_DRIVE_CAP_MAX, 
 #ifndef EYE_WIFI_ENABLED
 #define EYE_WIFI_ENABLED 1
 #endif
-constexpr char firmwareVersion[] = "alia-eye-wifi-9";
+constexpr char firmwareVersion[] = "alia-eye-wifi-10";
 constexpr uint16_t controlPort = 4242;
 
 extern const uint8_t textureStart[] asm("_binary_data_eye_rgb565_start");
@@ -70,6 +70,8 @@ const eye::Calibration factoryCalibration[2] = {
 eye::Calibration calibration[2], savedCalibration[2];
 bool calibrationDirty[2] = {false, false};
 bool calibrationStored = false;
+uint8_t backlight[2] = {EYE_BACKLIGHT_PERCENT, EYE_BACKLIGHT_PERCENT};
+uint8_t savedBacklight[2] = {EYE_BACKLIGHT_PERCENT, EYE_BACKLIGHT_PERCENT};
 
 void loadCalibration() {
   std::memcpy(calibration, factoryCalibration, sizeof(calibration));
@@ -83,13 +85,27 @@ void loadCalibration() {
              eye::validCalibration(stored.eyes[0], TFT_WIDTH, TFT_HEIGHT) &&
              eye::validCalibration(stored.eyes[1], TFT_WIDTH, TFT_HEIGHT);
     if (loaded) std::memcpy(calibration, stored.eyes, sizeof(calibration));
+    uint8_t brightness[2];
+    if (preferences.getBytesLength("backlight") == sizeof(brightness) &&
+        preferences.getBytes("backlight", brightness, sizeof(brightness)) == sizeof(brightness) &&
+        brightness[0] <= 100 && brightness[1] <= 100)
+      std::memcpy(backlight, brightness, sizeof(backlight));
     preferences.end();
   }
   std::memcpy(savedCalibration, calibration, sizeof(calibration));
+  std::memcpy(savedBacklight, backlight, sizeof(backlight));
   // Keep existing geometry while retiring v6's whole-panel inversion setting.
   for (auto& c : calibration) c.reserved = 0;
   calibrationStored = loaded;
   Serial.printf("CALSTORE %s\n", loaded ? "loaded" : "default");
+}
+
+void applyBacklight(int i, int percent) {
+  backlight[i] = uint8_t(percent);
+#if EYE_DISPLAY_ENABLED
+  ledcWrite(i, eye::backlightDuty(percent));
+  delay(1);  // Let the next PWM cycle latch the duty before reporting completion.
+#endif
 }
 
 void applyCalibration(int i, const eye::Calibration& next) {
@@ -171,7 +187,17 @@ void command(const char* text, Print& output) {
     const auto& c = calibration[selected];
     output.printf("CAL %d %d %d %d %d %d %d\n", selected + 1, int(c.centerX), int(c.centerY),
                   int(c.angle10), int(c.flipped), int(c.reserved),
-                  !calibrationStored || std::memcmp(&c, &savedCalibration[selected], sizeof(c)) != 0);
+                  !calibrationStored || std::memcmp(&c, &savedCalibration[selected], sizeof(c)) != 0 ||
+                  backlight[selected] != savedBacklight[selected]);
+  } else if (selected >= 0 && std::strcmp(text, "BL") == 0) {
+    unsigned duty = eye::backlightDuty(backlight[selected]);
+#if EYE_DISPLAY_ENABLED
+    duty = ledcRead(selected);
+#endif
+    output.printf("BL %d %u %u\n", selected + 1, unsigned(backlight[selected]), duty);
+  } else if (selected >= 0 && eye::parseBacklight(text, requested)) {
+    applyBacklight(selected, requested);
+    output.printf("OKBL %d %d\n", selected + 1, requested);
   } else if (selected >= 0 && std::strcmp(text, "FRAME") == 0) {
     output.printf("FRAME %d %lu %lu %lu\n", selected + 1, eyes[selected].frameUs,
                   eyes[selected].framePixels, eyes[selected].frameNumber);
@@ -180,9 +206,12 @@ void command(const char* text, Print& output) {
     output.printf("OKCAL %d\n", selected + 1);
   } else if (selected >= 0 && std::strcmp(text, "RESETCAL") == 0) {
     applyCalibration(selected, factoryCalibration[selected]);
+    applyBacklight(selected, EYE_BACKLIGHT_PERCENT);
     output.printf("OKCAL %d\n", selected + 1);
   } else if (selected < 0 && std::strcmp(text, "SAVECAL") == 0) {
-    if (calibrationStored && std::memcmp(calibration, savedCalibration, sizeof(calibration)) == 0) {
+    const bool geometryChanged = !calibrationStored || std::memcmp(calibration, savedCalibration, sizeof(calibration)) != 0;
+    const bool lightChanged = std::memcmp(backlight, savedBacklight, sizeof(backlight)) != 0;
+    if (!geometryChanged && !lightChanged) {
       output.print("OKSAVE\r\n");
       return;
     }
@@ -191,11 +220,20 @@ void command(const char* text, Print& output) {
     eye::CalibrationStore stored;
     stored.magic = eye::calibrationMagic;
     std::memcpy(stored.eyes, calibration, sizeof(calibration));
-    const bool saved = preferences.putBytes("config", &stored, sizeof(stored)) == sizeof(stored);
+    bool saved = true;
+    if (geometryChanged) {
+      saved = preferences.putBytes("config", &stored, sizeof(stored)) == sizeof(stored);
+      if (saved) {
+        std::memcpy(savedCalibration, calibration, sizeof(calibration));
+        calibrationStored = true;
+      }
+    }
+    if (saved && lightChanged) {
+      saved = preferences.putBytes("backlight", backlight, sizeof(backlight)) == sizeof(backlight);
+      if (saved) std::memcpy(savedBacklight, backlight, sizeof(backlight));
+    }
     preferences.end();
     if (!saved) { output.print("ERR storage\r\n"); return; }
-    std::memcpy(savedCalibration, calibration, sizeof(calibration));
-    calibrationStored = true;
     output.print("OKSAVE\r\n");
   } else if (std::strcmp(text, "POS") == 0) {
     const auto& state = eyes[first];
@@ -356,10 +394,10 @@ void setup() {
   const int centered[2] = {0, 0};
   drawFrames(centered, centered, true);
 #if EYE_DISPLAY_ENABLED
-  for (int i = 0; i < 2; ++i) ledcWrite(i, (1024 * EYE_BACKLIGHT_PERCENT + 50) / 100);
+  for (int i = 0; i < 2; ++i) ledcWrite(i, eye::backlightDuty(backlight[i]));
   delay(1);  // LEDC readback reflects the new duty only after the next 5 kHz PWM cycle.
   for (int i = 0; i < 2; ++i)
-    Serial.printf("BACKLIGHT %d %d %u %u\n", i + 1, EYE_BACKLIGHT_PERCENT, ledcRead(i), ledcReadFreq(i));
+    Serial.printf("BACKLIGHT %d %u %u %u\n", i + 1, unsigned(backlight[i]), ledcRead(i), ledcReadFreq(i));
   Serial.printf("DISPLAY dual-blocking %u %u %u\n", SPI_FREQUENCY, unsigned(sizeof(stripe)), unsigned(EYE_SPEED));
   Serial.printf("MOUNT portrait %d %d %d %d\n", int(calibration[0].flipped), int(calibration[1].flipped), kTextureWidth, kTextureHeight);
 #endif

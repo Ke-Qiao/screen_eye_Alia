@@ -7,13 +7,14 @@ const html = fs.readFileSync(path.join(__dirname, '../pi/calibration.html'), 'ut
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-async function page() {
+async function page(backlight = false) {
   let now = 0, sequence = 0;
   const timers = new Map(), calls = [], elements = {};
-  const server = {firmware:'alia-eye-wifi-7', width:240, height:320, eyes:[
+  const server = {firmware:backlight ? 'alia-eye-wifi-10' : 'alia-eye-wifi-7', width:240, height:320, eyes:[
     {screen:1, center_x:120, center_y:160, angle:0, top:'connector', unsaved:false},
     {screen:2, center_x:120, center_y:160, angle:0, top:'opposite', unsaved:false}
   ]};
+  if (backlight) for (const eye of server.eyes) eye.brightness = 8;
   const context = Object.fromEntries(['fillRect','save','translate','rotate','drawImage','restore','setLineDash','beginPath','moveTo','lineTo','stroke','arc'].map(key => [key, () => {}]));
   function element(id) {
     let value = '';
@@ -25,7 +26,7 @@ async function page() {
       addEventListener(type, handler) { (this.events[type] ||= []).push(handler); },
       fire(type, event = {}) { if (this.disabled && type === 'click') return; for (const handler of this.events[type] || []) handler({preventDefault() {}, ...event}); },
       checkValidity() {
-        const n = Number(value), rules = {x:[0,239,1], y:[0,319,1], angle:[-180,180,.1]};
+        const n = Number(value), rules = {x:[0,239,1], y:[0,319,1], angle:[-180,180,.1], brightness:[0,100,1]};
         const [low, high, step] = rules[id];
         return value !== '' && Number.isFinite(n) && n >= low && n <= high && Math.abs(n / step - Math.round(n / step)) < 1e-7;
       }
@@ -45,7 +46,8 @@ async function page() {
   async function reply(ok = true) {
     const call = calls.find(request => !request.done); assert.ok(call, 'Expected a pending request');
     call.done = true;
-    if (ok && call.url === '/api/calibration') Object.assign(server.eyes[call.data.screen-1], call.data, {unsaved:true});
+    if (ok && ['/api/calibration', '/api/backlight'].includes(call.url)) Object.assign(server.eyes[call.data.screen-1], call.data, {unsaved:true});
+    if (ok && call.url === '/api/reset') Object.assign(server.eyes[call.data.screen-1], {center_x:120, center_y:160, angle:0, top:call.data.screen === 1 ? 'connector' : 'opposite', brightness:8, unsaved:true});
     if (ok && call.url === '/api/save') for (const eye of server.eyes) eye.unsaved = false;
     const result = structuredClone(ok ? server : {error:'simulated timeout; result unknown'});
     call.resolve({ok, json:async () => result}); await settle();
@@ -69,6 +71,8 @@ async function page() {
   assert.ok(!html.includes('id="apply"'), 'Realtime editing must not require an apply button');
   {
     const p = await page(), e = p.elements;
+    assert.equal(e.brightness.disabled, true, 'Keep geometric calibration available on older firmware');
+    assert.equal(e['brightness-range'].disabled, true);
     e.preview.fire('pointerdown', {pointerId:1, clientX:130, clientY:170});
     e.preview.fire('pointermove', {clientX:140, clientY:175});
     await p.tick(0);
@@ -143,5 +147,47 @@ async function page() {
     p.input('angle', 1.2); await p.tick(0);
     assert.equal(p.last().data.center_x, 130); assert.equal(p.last().data.angle, 1.2); await p.reply();
   }
-  console.log('PASS actual realtime UI script: drag/keyboard/angle/top, latest-value coalescing, 33ms rate cap, editable during HTTP, no stale reply snap, per-eye isolation, revert, validation, explicit save, pause/readback without replay');
+  {
+    const p = await page(true), e = p.elements;
+    assert.equal(e.brightness.disabled, false); assert.equal(e.brightness.value, '8');
+    p.input('brightness-range', 0); await p.tick(0);
+    assert.equal(p.last().url, '/api/backlight');
+    assert.deepEqual(p.last().data, {screen:1, brightness:0});
+    p.input('brightness-range', 10); p.input('brightness', 25); p.input('angle', 2);
+    await p.tick(300); assert.equal(p.calls.length, 2, 'Coalesce brightness while a request is pending');
+    await p.reply(); await p.tick(0);
+    assert.equal(p.last().url, '/api/calibration');
+    assert.deepEqual(p.last().data, {screen:1, center_x:120, center_y:160, angle:2, top:'connector', brightness:25});
+    await p.reply();
+    p.buttons[1].fire('click'); assert.equal(e.brightness.value, '8');
+    p.input('brightness-range', 100); await p.tick(100);
+    assert.deepEqual(p.last().data, {screen:2, brightness:100});
+    p.buttons[0].fire('click'); assert.equal(e.brightness.value, '25');
+    p.input('brightness', 12); await p.reply(); await p.tick(100);
+    assert.deepEqual(p.last().data, {screen:1, brightness:12}); await p.reply();
+    assert.equal(p.server.eyes[0].brightness, 12); assert.equal(p.server.eyes[1].brightness, 100);
+    assert.equal(p.server.eyes[0].angle, 2); assert.equal(p.server.eyes[1].angle, 0);
+    assert.equal(p.calls.filter(c => c.url === '/api/save').length, 0);
+    e.save.fire('click'); assert.equal(p.last().url, '/api/save'); await p.reply();
+    assert.ok(p.server.eyes.every(eye => !eye.unsaved));
+    e.reset.fire('click'); assert.equal(p.last().url, '/api/reset'); await p.reply();
+    assert.equal(e.brightness.value, '8'); assert.equal(p.server.eyes[1].brightness, 100);
+  }
+  {
+    const p = await page(true), e = p.elements;
+    for (const value of ['', -1, 101, 1.5]) {
+      p.input('brightness', value); await p.tick(100);
+      assert.equal(p.calls.length, 1, 'Invalid brightness must not send');
+    }
+    p.input('brightness', 0); await p.tick(100); await p.reply();
+    p.input('brightness', 20); await p.tick(100); p.input('brightness', 30);
+    p.server.eyes[0].brightness = 20;
+    await p.reply(false); await p.tick(1000);
+    assert.equal(p.calls.length, 3, 'Do not replay an uncertain brightness change');
+    assert.equal(e.save.disabled, true); e.refresh.fire('click'); await p.reply();
+    assert.equal(e.brightness.value, '20'); await p.tick(1000); assert.equal(p.calls.length, 4);
+    p.input('brightness', 8); await p.tick(100); await p.reply();
+    assert.equal(p.server.eyes[0].brightness, 8);
+  }
+  console.log('PASS actual realtime UI script: geometry/backlight, independent screens, 0/full brightness, old firmware guard, coalescing, bounds, save/reset and pause/readback without replay');
 })().catch(error => { console.error(error); process.exitCode = 1; });

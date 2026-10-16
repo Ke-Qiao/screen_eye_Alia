@@ -107,7 +107,7 @@ def provision(link, ssid, password, token, expect_mac=None, timeout=30):
         except TimeoutError:
             if time.monotonic() >= deadline:
                 raise
-    if len(fields) != 6 or fields[1] not in ('alia-eye-wifi-2', 'alia-eye-wifi-3', 'alia-eye-wifi-4', 'alia-eye-wifi-5', 'alia-eye-wifi-6', 'alia-eye-wifi-7') or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', fields[2]):
+    if len(fields) != 6 or fields[1] not in tuple(f'alia-eye-wifi-{version}' for version in range(2, 11)) or not re.fullmatch(r'(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}', fields[2]):
         raise RuntimeError('无效 STATUS 响应或固件版本不符')
     try:
         display, target, drawn = map(int, fields[3:])

@@ -15,6 +15,20 @@ struct CalibrationStore {
 };
 constexpr uint32_t calibrationMagic = 0x43414C31;
 
+inline unsigned backlightDuty(unsigned percent) {
+  return (1024 * percent + 50) / 100;
+}
+
+inline bool parseBacklight(const char* text, int& result) {
+  if (std::strncmp(text, "BL ", 3) != 0) return false;
+  char* end;
+  errno = 0;
+  const long value = std::strtol(text + 3, &end, 10);
+  if (end == text + 3 || *end != '\0' || errno == ERANGE || value < 0 || value > 100) return false;
+  result = int(value);
+  return true;
+}
+
 inline bool validCalibration(const Calibration& c, int width, int height) {
   return c.centerX >= 0 && c.centerX < width && c.centerY >= 0 && c.centerY < height &&
          c.angle10 >= -1800 && c.angle10 <= 1800 &&

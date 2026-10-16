@@ -123,6 +123,17 @@ int main() {
   assert(!eye::validConfig(config));
   std::cout << "PASS Wi-Fi configuration bounds, secret framing, authentication and invalid persisted config\n";
   int value = 0;
+  static_assert(sizeof(eye::CalibrationStore) == 44, "Preserve v9 calibration NVS layout");
+  for (const char* bad : {"", "BL", "BL ", "BL -1", "BL 101", "BL 1.5", "BL NaN", "BL 5 extra", "BL 999999999999999999999"}) {
+    value = 42;
+    assert(!eye::parseBacklight(bad, value) && value == 42);
+  }
+  for (int percent = 0; percent <= 100; ++percent) {
+    assert(eye::parseBacklight(("BL " + std::to_string(percent)).c_str(), value) && value == percent);
+    assert(eye::backlightDuty(percent) == unsigned(std::lround(percent * 1024.0 / 100)));
+  }
+  assert(eye::backlightDuty(0) == 0 && eye::backlightDuty(8) == 82 && eye::backlightDuty(100) == 1024);
+  std::cout << "PASS backlight: strict percent bounds, rejected input unchanged, 0/full-on/8% duty and legacy NVS layout\n";
   for (const char* bad : {"", "Y", "Y ", "Y 1.2", "Y NaN", "Y 1 junk", "X 1", "Y 2147483648", "Y -2147483649", "Y 99999999999999999999999"})
     assert(!eye::parseOffset(bad, value));
   assert(eye::parseOffset("Y -60", value) && value == -60);
